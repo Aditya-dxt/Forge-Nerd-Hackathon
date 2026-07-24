@@ -1,0 +1,5 @@
+server.port=8080
+youtube.api.key=${YOUTUBE_API_KEY:}
+github.api.token=${GITHUB_TOKEN:}
+claude.api.key=${CLAUDE_API_KEY:}
+spring.data.mongodb.uri=${MONGO_URI:}
