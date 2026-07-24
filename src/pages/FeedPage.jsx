@@ -55,8 +55,9 @@ const FeedPage = () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await api.get('/api/feed');
-      setItems(data.items || data);
+      const res = await api.get('/api/feed');
+      const data = res.data;
+      setItems(Array.isArray(data) ? data : data.items || data.feed || []);
     } catch (err) {
       console.error('Failed to fetch feed:', err);
       setError('Failed to load your feed. Please try again.');
@@ -78,26 +79,22 @@ const FeedPage = () => {
     }
   };
 
-  const handleComplete = (item) => {
-    setReflectionItem(item);
-  };
-
-  const handleReflectionSubmit = async (reflectionData) => {
-    if (!reflectionItem) return;
-    
+  const handleComplete = async (item) => {
     try {
-      await api.post('/api/interactions', { 
-        contentId: reflectionItem.id, 
-        type: 'completed',
-        reflection: reflectionData
-      });
-      
-      setItems((prev) => prev.filter((i) => i.id !== reflectionItem.id));
-      setReflectionItem(null);
+      await api.post('/api/interactions', { contentId: item.id, type: 'completed' });
     } catch (err) {
       console.error('Failed to record completion:', err);
     }
+    setReflectionItem(item);
   };
+
+  const handleReflectionClose = () => {
+    if (reflectionItem) {
+      setItems((prev) => prev.filter((i) => i.id !== reflectionItem.id));
+    }
+    setReflectionItem(null);
+  };
+
 
   const handleSkip = async (item) => {
     try {
@@ -149,9 +146,7 @@ const FeedPage = () => {
       {reflectionItem && (
         <ReflectionModal
           item={reflectionItem}
-          isOpen={!!reflectionItem}
-          onClose={() => setReflectionItem(null)}
-          onSubmit={handleReflectionSubmit}
+          onClose={handleReflectionClose}
         />
       )}
     </div>
