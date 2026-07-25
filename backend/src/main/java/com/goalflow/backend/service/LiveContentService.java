@@ -14,7 +14,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Fetches live content from external APIs (GitHub, HN, Reddit) and maps
+ * Fetches live content from external APIs (GitHub, HN, Reddit, YouTube) and maps
  * results to ContentItem objects for the scoring pipeline. Includes an
  * in-memory cache with 10-minute TTL to avoid rate limits during demos.
  */
@@ -27,7 +27,7 @@ public class LiveContentService {
 
     private final WebClient webClient;
 
-    // In-memory cache: query → (timestamp, results)
+    // In-memory cache: query -> (timestamp, results)
     private final ConcurrentHashMap<String, CacheEntry> cache = new ConcurrentHashMap<>();
 
     @Value("${YOUTUBE_API_KEY:#{null}}")
@@ -65,6 +65,7 @@ public class LiveContentService {
         allItems.addAll(fetchHackerNews(query, goal));
         allItems.addAll(fetchReddit(query, goal));
         allItems.addAll(fetchYouTube(query, goal));
+        allItems.addAll(fetchEntertainment(query, goal));
 
         // Cache the aggregated results
         cache.put(query, new CacheEntry(allItems));
@@ -166,7 +167,6 @@ public class LiveContentService {
                 String storyUrl = (String) hit.get("url");
                 String objectID = (String) hit.get("objectID");
 
-                // Skip stories without a URL (e.g. Ask HN posts)
                 if (storyUrl == null || storyUrl.isBlank()) {
                     storyUrl = "https://news.ycombinator.com/item?id=" + objectID;
                 }
@@ -175,17 +175,15 @@ public class LiveContentService {
                 item.setId("hn-" + objectID);
                 item.setTitle((String) hit.get("title"));
                 item.setUrl(storyUrl);
-                item.setDescription((String) hit.get("title")); // HN stories don't have descriptions
+                item.setDescription((String) hit.get("title"));
                 item.setSource("hackernews");
                 item.setFormat("discussion");
                 item.setDurationMinutes(null);
                 item.setDifficulty(goal.getSkillLevel() != null ? goal.getSkillLevel() : "intermediate");
 
-                // Tags from HN are limited — use query keywords
                 item.setTags(new ArrayList<>(QueryBuilder.extractKeywords(
                         (String) hit.get("title"))));
 
-                // Normalize points to popularity
                 int points = hit.get("points") instanceof Number
                         ? ((Number) hit.get("points")).intValue() : 0;
                 item.setPopularityScore(normalizePopularity(points, 5000));
@@ -253,19 +251,16 @@ public class LiveContentService {
                 item.setDurationMinutes(null);
                 item.setDifficulty(goal.getSkillLevel() != null ? goal.getSkillLevel() : "intermediate");
 
-                // Tags from subreddit name + title keywords
                 List<String> tags = new ArrayList<>();
                 String subreddit = (String) post.get("subreddit");
                 if (subreddit != null) tags.add(subreddit.toLowerCase());
                 tags.addAll(QueryBuilder.extractKeywords((String) post.get("title")));
                 item.setTags(tags);
 
-                // Normalize score to popularity
                 int score = post.get("score") instanceof Number
                         ? ((Number) post.get("score")).intValue() : 0;
                 item.setPopularityScore(normalizePopularity(score, 10000));
 
-                // Use thumbnail if available
                 String thumbnail = (String) post.get("thumbnail");
                 if (thumbnail != null && thumbnail.startsWith("http")) {
                     item.setThumbnailUrl(thumbnail);
@@ -297,7 +292,7 @@ public class LiveContentService {
             String encodedQuery = java.net.URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8);
 
             Map<String, Object> response = webClient.get()
-                    .uri("https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=10&q=" 
+                    .uri("https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=10&q="
                             + encodedQuery + "&key=" + youtubeApiKey)
                     .retrieve()
                     .bodyToMono(Map.class)
@@ -332,7 +327,6 @@ public class LiveContentService {
                 item.setFormat("video");
                 item.setDifficulty(goal.getSkillLevel() != null ? goal.getSkillLevel() : "beginner");
 
-                // Thumbnail
                 Map<String, Object> thumbnails = (Map<String, Object>) snippet.get("thumbnails");
                 if (thumbnails != null) {
                     Map<String, Object> high = (Map<String, Object>) thumbnails.get("high");
@@ -340,19 +334,18 @@ public class LiveContentService {
                 }
 
                 item.setTags(new ArrayList<>(QueryBuilder.extractKeywords((String) snippet.get("title"))));
-                item.setPopularityScore(75); // Base popularity if no stats are fetched
+                item.setPopularityScore(75);
 
                 results.add(item);
                 videoIds.add(videoId);
                 itemMap.put(videoId, item);
             }
 
-            // Second call for duration (if time allows, I am adding it here because it makes it better)
             if (!videoIds.isEmpty()) {
                 try {
                     String idsJoined = String.join(",", videoIds);
                     Map<String, Object> statsResponse = webClient.get()
-                            .uri("https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=" 
+                            .uri("https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id="
                                     + idsJoined + "&key=" + youtubeApiKey)
                             .retrieve()
                             .bodyToMono(Map.class)
@@ -393,6 +386,75 @@ public class LiveContentService {
         }
     }
 
+    // ======================== ENTERTAINMENT (BALANCED CONTENT) ========================
+
+    @SuppressWarnings("unchecked")
+    private List<ContentItem> fetchEntertainment(String query, UserGoal goal) {
+        if (youtubeApiKey == null || youtubeApiKey.isBlank()) {
+            return Collections.emptyList();
+        }
+
+        try {
+            String entertainmentQuery = query + " funny";
+            log.info("Fetching entertainment content for query: '{}'", entertainmentQuery);
+            String encodedQuery = java.net.URLEncoder.encode(entertainmentQuery, java.nio.charset.StandardCharsets.UTF_8);
+
+            Map<String, Object> response = webClient.get()
+                    .uri("https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=3&q="
+                            + encodedQuery + "&key=" + youtubeApiKey)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(10))
+                    .block();
+
+            if (response == null || !response.containsKey("items")) {
+                return Collections.emptyList();
+            }
+
+            List<Map<String, Object>> items = (List<Map<String, Object>>) response.get("items");
+            List<ContentItem> results = new ArrayList<>();
+
+            for (Map<String, Object> ytItem : items) {
+                Map<String, Object> idObj = (Map<String, Object>) ytItem.get("id");
+                if (idObj == null) continue;
+                String videoId = (String) idObj.get("videoId");
+                if (videoId == null) continue;
+
+                Map<String, Object> snippet = (Map<String, Object>) ytItem.get("snippet");
+                if (snippet == null) continue;
+
+                ContentItem item = new ContentItem();
+                item.setId("ent-" + videoId);
+                item.setTitle((String) snippet.get("title"));
+                item.setUrl("https://www.youtube.com/watch?v=" + videoId);
+                item.setDescription((String) snippet.get("description"));
+                item.setSource("youtube");
+                item.setFormat("entertainment");
+                item.setDifficulty(goal.getSkillLevel() != null ? goal.getSkillLevel() : "beginner");
+
+                Map<String, Object> thumbnails = (Map<String, Object>) snippet.get("thumbnails");
+                if (thumbnails != null) {
+                    Map<String, Object> high = (Map<String, Object>) thumbnails.get("high");
+                    if (high != null) item.setThumbnailUrl((String) high.get("url"));
+                }
+
+                List<String> tags = new ArrayList<>(QueryBuilder.extractKeywords((String) snippet.get("title")));
+                tags.add("entertainment");
+                item.setTags(tags);
+                item.setPopularityScore(70);
+
+                results.add(item);
+            }
+
+            log.info("Entertainment returned {} items", results.size());
+            return results;
+
+        } catch (Exception e) {
+            log.error("Entertainment fetch failed: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
     private Integer parseIsoDuration(String isoDuration) {
         if (isoDuration == null || isoDuration.isBlank()) return null;
         try {
@@ -404,9 +466,6 @@ public class LiveContentService {
 
     // ======================== HELPERS ========================
 
-    /**
-     * Normalize a raw count (stars, points, upvotes) to a 0-100 scale.
-     */
     private int normalizePopularity(int rawCount, int maxExpected) {
         if (rawCount <= 0) return 0;
         if (rawCount >= maxExpected) return 100;

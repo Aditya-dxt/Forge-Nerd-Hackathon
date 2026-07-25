@@ -34,12 +34,16 @@ public class RecommendationService {
         "get", "become", "with", "my", "is", "at", "by", "or", "be"
     );
 
+    // Max number of entertainment items guaranteed a slot in the final feed
+    private static final int MAX_ENTERTAINMENT_SLOTS = 2;
+
     /**
      * Get adaptive recommendations for a goal. Fetches live content from external
-     * APIs (GitHub, HN, Reddit) and scores them using behavioral profile data.
+     * APIs (GitHub, HN, Reddit, YouTube) and scores them using behavioral profile data.
+     * Guarantees a small number of entertainment items are mixed in, per the
+     * "balanced content strategy" design goal.
      */
     public List<ScoredContentItem> getRecommendations(UserGoal goal, int limit) {
-        // Fetch live content from external APIs instead of static DB collection
         List<ContentItem> allItems = liveContentService.getLiveContent(goal);
 
         Set<String> goalKeywords = extractKeywords(goal.getGoal());
@@ -47,33 +51,51 @@ public class RecommendationService {
                 ? Collections.emptySet()
                 : goal.getAvoidTopics().stream().map(String::toLowerCase).collect(Collectors.toSet());
 
-        // Pull behavioral data for adaptive scoring
         String goalId = goal.getId();
         BehavioralProfile profile = buildBehavioralProfile(goalId);
 
-        List<ScoredContentItem> scored = new ArrayList<>();
+        List<ScoredContentItem> learningScored = new ArrayList<>();
+        List<ScoredContentItem> entertainmentScored = new ArrayList<>();
 
         for (ContentItem item : allItems) {
             List<String> itemTags = item.getTags() == null ? Collections.emptyList() : item.getTags();
             Set<String> itemTagsLower = itemTags.stream().map(String::toLowerCase).collect(Collectors.toSet());
 
-            // Skip items touching avoided topics
             boolean touchesAvoided = itemTagsLower.stream().anyMatch(avoidTopics::contains);
             if (touchesAvoided) continue;
 
-            // Skip items the user has already completed or skipped
             if (profile.completedContentIds.contains(item.getId())
                     || profile.skippedContentIds.contains(item.getId())) {
                 continue;
             }
 
             ScoringResult result = calculateAdaptiveScore(goal, goalKeywords, itemTagsLower, item, profile);
-            scored.add(new ScoredContentItem(item, result.score, result.whyRecommended));
+            ScoredContentItem scoredItem = new ScoredContentItem(item, result.score, result.whyRecommended);
+
+            if ("entertainment".equalsIgnoreCase(item.getFormat())) {
+                entertainmentScored.add(scoredItem);
+            } else {
+                learningScored.add(scoredItem);
+            }
         }
 
-        scored.sort((a, b) -> Integer.compare(b.getMatchScore(), a.getMatchScore()));
+        learningScored.sort((a, b) -> Integer.compare(b.getMatchScore(), a.getMatchScore()));
+        entertainmentScored.sort((a, b) -> Integer.compare(b.getMatchScore(), a.getMatchScore()));
 
-        return scored.stream().limit(limit).collect(Collectors.toList());
+        // Reserve a small number of slots for entertainment so it doesn't get
+        // crowded out by higher-scoring learning content (balanced content strategy)
+        int entertainmentSlots = Math.min(MAX_ENTERTAINMENT_SLOTS, entertainmentScored.size());
+        int learningSlots = Math.max(0, limit - entertainmentSlots);
+
+        List<ScoredContentItem> finalList = new ArrayList<>();
+        finalList.addAll(learningScored.stream().limit(learningSlots).collect(Collectors.toList()));
+        finalList.addAll(entertainmentScored.stream().limit(entertainmentSlots).collect(Collectors.toList()));
+
+        // Re-sort the combined list by score so entertainment items appear
+        // interleaved naturally rather than always at the end
+        finalList.sort((a, b) -> Integer.compare(b.getMatchScore(), a.getMatchScore()));
+
+        return finalList.stream().limit(limit).collect(Collectors.toList());
     }
 
     /**
@@ -103,7 +125,6 @@ public class RecommendationService {
             }
         }
 
-        // Resolve completed content items to learn format/difficulty/tag preferences
         if (!profile.completedContentIds.isEmpty()) {
             List<ContentItem> completedItems = repository.findAllById(profile.completedContentIds);
             for (ContentItem ci : completedItems) {
@@ -121,7 +142,6 @@ public class RecommendationService {
             }
         }
 
-        // Resolve skipped items to learn anti-preferences
         if (!profile.skippedContentIds.isEmpty()) {
             List<ContentItem> skippedItems = repository.findAllById(profile.skippedContentIds);
             for (ContentItem si : skippedItems) {
@@ -134,7 +154,6 @@ public class RecommendationService {
             }
         }
 
-        // Check most recent reflection
         if (!reflections.isEmpty()) {
             profile.lastReflectionUnderstood = reflections.get(0).isUnderstood();
             profile.hasReflections = true;
@@ -152,7 +171,6 @@ public class RecommendationService {
         int score = 0;
         List<String> reasons = new ArrayList<>();
 
-        // 1. Keyword/tag overlap (up to 50 pts)
         long overlapCount = itemTagsLower.stream().filter(goalKeywords::contains).count();
         int overlapScore = (int) Math.min(50, overlapCount * 15);
         score += overlapScore;
@@ -161,10 +179,8 @@ public class RecommendationService {
             reasons.add("Matches your goal keywords: " + String.join(", ", matchedTags));
         }
 
-        // 2. Difficulty match (20 pts)
         String effectiveDifficulty = goal.getSkillLevel();
 
-        // Adaptive: if last reflection was understood=false, bias toward easier difficulty
         if (profile.hasReflections && !profile.lastReflectionUnderstood) {
             effectiveDifficulty = lowerDifficulty(effectiveDifficulty);
         }
@@ -179,7 +195,6 @@ public class RecommendationService {
             }
         }
 
-        // 3. Preferred format match (15 pts)
         if (goal.getPreferredFormats() != null && item.getFormat() != null) {
             boolean formatMatch = goal.getPreferredFormats().stream()
                     .anyMatch(f -> f.equalsIgnoreCase(item.getFormat()));
@@ -189,7 +204,6 @@ public class RecommendationService {
             }
         }
 
-        // 4. Duration fit (10 pts)
         if (item.getDurationMinutes() != null && goal.getDailyMinutes() > 0) {
             if (item.getDurationMinutes() <= goal.getDailyMinutes()) {
                 score += 10;
@@ -199,12 +213,8 @@ public class RecommendationService {
             score += 5;
         }
 
-        // 5. Popularity tiebreaker (up to 5 pts)
         score += Math.round(item.getPopularityScore() / 100f * 5);
 
-        // === ADAPTIVE SCORING BONUSES ===
-
-        // 6. Behavioral format boost: prefer formats the user has completed before (up to 10 pts)
         if (item.getFormat() != null && profile.completedFormats.containsKey(item.getFormat().toLowerCase())) {
             int completedCount = profile.completedFormats.get(item.getFormat().toLowerCase());
             int formatBoost = Math.min(10, completedCount * 3);
@@ -212,7 +222,6 @@ public class RecommendationService {
             reasons.add("You've successfully completed " + completedCount + " " + item.getFormat() + " items before");
         }
 
-        // 7. Behavioral tag boost: prefer tags the user has engaged with (up to 10 pts)
         if (item.getTags() != null) {
             long tagOverlap = item.getTags().stream()
                     .map(String::toLowerCase)
@@ -225,7 +234,6 @@ public class RecommendationService {
             }
         }
 
-        // 8. Anti-preference penalty: demote formats/difficulties the user tends to skip
         if (item.getFormat() != null && profile.skippedFormats.containsKey(item.getFormat().toLowerCase())) {
             int skippedCount = profile.skippedFormats.get(item.getFormat().toLowerCase());
             int penalty = Math.min(10, skippedCount * 3);
@@ -237,25 +245,27 @@ public class RecommendationService {
             score -= penalty;
         }
 
-        // 9. Reflection-based difficulty bias: if user didn't understand, boost beginner content
         if (profile.hasReflections && !profile.lastReflectionUnderstood) {
             if ("beginner".equalsIgnoreCase(item.getDifficulty())) {
                 score += 15;
                 reasons.add("Simpler content recommended after your recent reflection");
             } else if ("advanced".equalsIgnoreCase(item.getDifficulty())) {
-                score -= 10; // penalize advanced content when struggling
+                score -= 10;
             }
 
-            // Also prefer shorter content when struggling
             if (item.getDurationMinutes() != null && item.getDurationMinutes() <= 25) {
                 score += 5;
                 reasons.add("Shorter format to help build confidence");
             }
         }
 
+        // Entertainment items get a distinct "why recommended" reason if nothing else matched
+        if ("entertainment".equalsIgnoreCase(item.getFormat()) && reasons.isEmpty()) {
+            reasons.add("A lighter break, still connected to your goal");
+        }
+
         score = Math.max(0, Math.min(score, 100));
 
-        // Build the "why recommended" string
         String whyRecommended;
         if (reasons.isEmpty()) {
             whyRecommended = "Popular content relevant to your learning goals";
@@ -266,9 +276,6 @@ public class RecommendationService {
         return new ScoringResult(score, whyRecommended);
     }
 
-    /**
-     * Lower difficulty by one step: advanced -> intermediate, intermediate -> beginner.
-     */
     private String lowerDifficulty(String difficulty) {
         if (difficulty == null) return "beginner";
         switch (difficulty.toLowerCase()) {
