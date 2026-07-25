@@ -4,6 +4,7 @@ import com.goalflow.backend.dto.UserGoal;
 import com.goalflow.backend.model.ContentItem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -28,6 +29,9 @@ public class LiveContentService {
 
     // In-memory cache: query → (timestamp, results)
     private final ConcurrentHashMap<String, CacheEntry> cache = new ConcurrentHashMap<>();
+
+    @Value("${YOUTUBE_API_KEY:#{null}}")
+    private String youtubeApiKey;
 
     public LiveContentService() {
         this.webClient = WebClient.builder()
@@ -60,6 +64,7 @@ public class LiveContentService {
         allItems.addAll(fetchGitHub(query, goal));
         allItems.addAll(fetchHackerNews(query, goal));
         allItems.addAll(fetchReddit(query, goal));
+        allItems.addAll(fetchYouTube(query, goal));
 
         // Cache the aggregated results
         cache.put(query, new CacheEntry(allItems));
@@ -275,6 +280,125 @@ public class LiveContentService {
         } catch (Exception e) {
             log.error("Reddit API failed: {}", e.getMessage());
             return Collections.emptyList();
+        }
+    }
+
+    // ======================== YOUTUBE ========================
+
+    @SuppressWarnings("unchecked")
+    private List<ContentItem> fetchYouTube(String query, UserGoal goal) {
+        if (youtubeApiKey == null || youtubeApiKey.isBlank()) {
+            log.warn("YOUTUBE_API_KEY is not set. Skipping YouTube recommendations.");
+            return Collections.emptyList();
+        }
+
+        try {
+            log.info("Fetching YouTube videos for query: '{}'", query);
+            String encodedQuery = java.net.URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8);
+
+            Map<String, Object> response = webClient.get()
+                    .uri("https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=10&q=" 
+                            + encodedQuery + "&key=" + youtubeApiKey)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(10))
+                    .block();
+
+            if (response == null || !response.containsKey("items")) {
+                log.warn("YouTube returned no items");
+                return Collections.emptyList();
+            }
+
+            List<Map<String, Object>> items = (List<Map<String, Object>>) response.get("items");
+            List<ContentItem> results = new ArrayList<>();
+            List<String> videoIds = new ArrayList<>();
+            Map<String, ContentItem> itemMap = new HashMap<>();
+
+            for (Map<String, Object> ytItem : items) {
+                Map<String, Object> idObj = (Map<String, Object>) ytItem.get("id");
+                if (idObj == null) continue;
+                String videoId = (String) idObj.get("videoId");
+                if (videoId == null) continue;
+
+                Map<String, Object> snippet = (Map<String, Object>) ytItem.get("snippet");
+                if (snippet == null) continue;
+
+                ContentItem item = new ContentItem();
+                item.setId("yt-" + videoId);
+                item.setTitle((String) snippet.get("title"));
+                item.setUrl("https://www.youtube.com/watch?v=" + videoId);
+                item.setDescription((String) snippet.get("description"));
+                item.setSource("youtube");
+                item.setFormat("video");
+                item.setDifficulty(goal.getSkillLevel() != null ? goal.getSkillLevel() : "beginner");
+
+                // Thumbnail
+                Map<String, Object> thumbnails = (Map<String, Object>) snippet.get("thumbnails");
+                if (thumbnails != null) {
+                    Map<String, Object> high = (Map<String, Object>) thumbnails.get("high");
+                    if (high != null) item.setThumbnailUrl((String) high.get("url"));
+                }
+
+                item.setTags(new ArrayList<>(QueryBuilder.extractKeywords((String) snippet.get("title"))));
+                item.setPopularityScore(75); // Base popularity if no stats are fetched
+
+                results.add(item);
+                videoIds.add(videoId);
+                itemMap.put(videoId, item);
+            }
+
+            // Second call for duration (if time allows, I am adding it here because it makes it better)
+            if (!videoIds.isEmpty()) {
+                try {
+                    String idsJoined = String.join(",", videoIds);
+                    Map<String, Object> statsResponse = webClient.get()
+                            .uri("https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=" 
+                                    + idsJoined + "&key=" + youtubeApiKey)
+                            .retrieve()
+                            .bodyToMono(Map.class)
+                            .timeout(Duration.ofSeconds(5))
+                            .block();
+
+                    if (statsResponse != null && statsResponse.containsKey("items")) {
+                        List<Map<String, Object>> statItems = (List<Map<String, Object>>) statsResponse.get("items");
+                        for (Map<String, Object> statItem : statItems) {
+                            String vidId = (String) statItem.get("id");
+                            ContentItem mappedItem = itemMap.get(vidId);
+                            if (mappedItem != null) {
+                                Map<String, Object> contentDetails = (Map<String, Object>) statItem.get("contentDetails");
+                                if (contentDetails != null && contentDetails.get("duration") != null) {
+                                    String isoDuration = (String) contentDetails.get("duration");
+                                    mappedItem.setDurationMinutes(parseIsoDuration(isoDuration));
+                                }
+
+                                Map<String, Object> statistics = (Map<String, Object>) statItem.get("statistics");
+                                if (statistics != null && statistics.get("viewCount") != null) {
+                                    long views = Long.parseLong((String) statistics.get("viewCount"));
+                                    mappedItem.setPopularityScore(normalizePopularity((int) Math.min(views, Integer.MAX_VALUE), 1000000));
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to fetch YouTube stats/duration: {}", e.getMessage());
+                }
+            }
+
+            log.info("YouTube returned {} items", results.size());
+            return results;
+
+        } catch (Exception e) {
+            log.error("YouTube API failed: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    private Integer parseIsoDuration(String isoDuration) {
+        if (isoDuration == null || isoDuration.isBlank()) return null;
+        try {
+            return (int) Duration.parse(isoDuration).toMinutes();
+        } catch (Exception e) {
+            return null;
         }
     }
 
