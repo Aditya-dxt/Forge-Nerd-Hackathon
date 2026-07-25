@@ -59,7 +59,7 @@ public class LiveContentService {
         // Fetch from each source independently — failure in one doesn't break others
         allItems.addAll(fetchGitHub(query, goal));
         allItems.addAll(fetchHackerNews(query, goal));
-        // allItems.addAll(fetchReddit(query, goal));
+        allItems.addAll(fetchReddit(query, goal));
 
         // Cache the aggregated results
         cache.put(query, new CacheEntry(allItems));
