@@ -26,17 +26,21 @@ public class RecommendationService {
     @Autowired
     private ReflectionRepository reflectionRepository;
 
+    @Autowired
+    private LiveContentService liveContentService;
+
     private static final Set<String> STOPWORDS = Set.of(
         "a", "an", "the", "to", "for", "of", "in", "on", "and", "i", "want", "learn",
         "get", "become", "with", "my", "is", "at", "by", "or", "be"
     );
 
     /**
-     * Get adaptive recommendations for a goal. Factors in past interactions
-     * and reflections to personalize scoring and explanations.
+     * Get adaptive recommendations for a goal. Fetches live content from external
+     * APIs (GitHub, HN, Reddit) and scores them using behavioral profile data.
      */
     public List<ScoredContentItem> getRecommendations(UserGoal goal, int limit) {
-        List<ContentItem> allItems = repository.findAll();
+        // Fetch live content from external APIs instead of static DB collection
+        List<ContentItem> allItems = liveContentService.getLiveContent(goal);
 
         Set<String> goalKeywords = extractKeywords(goal.getGoal());
         Set<String> avoidTopics = goal.getAvoidTopics() == null
