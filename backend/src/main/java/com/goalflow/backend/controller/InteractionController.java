@@ -13,7 +13,7 @@ import java.util.Set;
 
 @CrossOrigin(origins = "*")
 @RestController
-@RequestMapping("/interactions")
+@RequestMapping({"/interactions", "/api/interactions"})
 public class InteractionController {
 
     private static final Set<String> VALID_ACTIONS = Set.of("SHOWN", "CLICKED", "COMPLETED", "SKIPPED");

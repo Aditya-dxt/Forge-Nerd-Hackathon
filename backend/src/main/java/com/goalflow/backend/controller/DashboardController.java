@@ -10,7 +10,7 @@ import java.util.Map;
 
 @CrossOrigin(origins = "*")
 @RestController
-@RequestMapping("/dashboard")
+@RequestMapping({"/dashboard", "/api/dashboard"})
 public class DashboardController {
 
     @Autowired
