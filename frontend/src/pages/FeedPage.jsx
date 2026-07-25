@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import FeedCard from '../components/FeedCard';
 import ReflectionModal from '../components/ReflectionModal';
+import VideoPlayerModal from '../components/VideoPlayerModal';
 import api from '../lib/api';
 
 const SkeletonCard = () => (
@@ -50,6 +51,7 @@ const FeedPage = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [reflectionItem, setReflectionItem] = useState(null);
+  const [playingItem, setPlayingItem] = useState(null);
 
   const fetchFeed = async () => {
     try {
@@ -77,11 +79,16 @@ const FeedPage = () => {
 
   const handleStart = async (item) => {
     try {
-      window.open(item.url, '_blank', 'noopener,noreferrer');
       const goalId = await getGoalId();
       await api.post('/api/interactions', { goalId, contentId: item.id, action: 'CLICKED' });
     } catch (err) {
       console.error('Failed to record start interaction:', err);
+    }
+
+    if (item.source === 'youtube') {
+      setPlayingItem(item);
+    } else {
+      window.open(item.url, '_blank', 'noopener,noreferrer');
     }
   };
 
@@ -93,6 +100,11 @@ const FeedPage = () => {
       console.error('Failed to record completion:', err);
     }
     setReflectionItem(item);
+  };
+
+  const handleAutoComplete = async (item) => {
+    setPlayingItem(null);
+    await handleComplete(item);
   };
 
   const handleReflectionClose = () => {
@@ -126,7 +138,7 @@ const FeedPage = () => {
       ) : error ? (
         <div className="bg-red-50 border border-red-100 rounded-xl p-6 text-center">
           <p className="text-red-600 mb-4">{error}</p>
-          <button 
+          <button
             onClick={fetchFeed}
             className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors"
           >
@@ -148,6 +160,14 @@ const FeedPage = () => {
             </div>
           ))}
         </div>
+      )}
+
+      {playingItem && (
+        <VideoPlayerModal
+          item={playingItem}
+          onClose={() => setPlayingItem(null)}
+          onAutoComplete={handleAutoComplete}
+        />
       )}
 
       {reflectionItem && (
