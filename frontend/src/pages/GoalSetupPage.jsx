@@ -51,10 +51,10 @@ export default function GoalSetupPage() {
 
     try {
       await api.post('/api/goals', {
-        title: title.trim(),
+        goal: title.trim(),
         deadline,
         skillLevel,
-        dailyTime: Number(dailyTime),
+        dailyMinutes: Math.round(Number(dailyTime) * 60),
         preferredFormats,
       });
 
