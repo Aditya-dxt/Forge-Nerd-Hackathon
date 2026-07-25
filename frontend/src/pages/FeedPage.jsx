@@ -70,10 +70,16 @@ const FeedPage = () => {
     fetchFeed();
   }, []);
 
+  const getGoalId = async () => {
+    const goalsRes = await api.get('/api/goals/active');
+    return goalsRes.data[goalsRes.data.length - 1]?.id;
+  };
+
   const handleStart = async (item) => {
     try {
       window.open(item.url, '_blank', 'noopener,noreferrer');
-      await api.post('/api/interactions', { contentId: item.id, type: 'clicked' });
+      const goalId = await getGoalId();
+      await api.post('/api/interactions', { goalId, contentId: item.id, action: 'CLICKED' });
     } catch (err) {
       console.error('Failed to record start interaction:', err);
     }
@@ -81,7 +87,8 @@ const FeedPage = () => {
 
   const handleComplete = async (item) => {
     try {
-      await api.post('/api/interactions', { contentId: item.id, type: 'completed' });
+      const goalId = await getGoalId();
+      await api.post('/api/interactions', { goalId, contentId: item.id, action: 'COMPLETED' });
     } catch (err) {
       console.error('Failed to record completion:', err);
     }
@@ -95,11 +102,11 @@ const FeedPage = () => {
     setReflectionItem(null);
   };
 
-
   const handleSkip = async (item) => {
     try {
       setItems((prev) => prev.filter((i) => i.id !== item.id));
-      await api.post('/api/interactions', { contentId: item.id, type: 'skipped' });
+      const goalId = await getGoalId();
+      await api.post('/api/interactions', { goalId, contentId: item.id, action: 'SKIPPED' });
     } catch (err) {
       console.error('Failed to record skip interaction:', err);
     }
