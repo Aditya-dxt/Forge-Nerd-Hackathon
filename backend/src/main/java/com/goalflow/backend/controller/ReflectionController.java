@@ -12,7 +12,7 @@ import java.util.Map;
 
 @CrossOrigin(origins = "*")
 @RestController
-@RequestMapping("/reflections")
+@RequestMapping({"/reflections", "/api/reflections"})
 public class ReflectionController {
 
     @Autowired
