@@ -53,8 +53,19 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/api/dashboard/summary');
-      setData(res.data);
+      // Fetch active goal to get goalId
+      const goalsRes = await api.get('/api/goals/active');
+      const goalId = goalsRes.data[goalsRes.data.length - 1]?.id;
+
+      const res = await api.get(`/api/dashboard/summary?goalId=${goalId}`);
+      
+      // Map API response to UI expected shape
+      setData({
+        streak: res.data.currentStreak || 0,
+        timeSpentThisWeek: res.data.totalTimeSpentEstimateMinutes || 0,
+        itemsCompleted: res.data.totalItemsCompleted || 0,
+        breakdown: [] // Backend doesn't support breakdown yet
+      });
     } catch (err) {
       console.error('Failed to fetch dashboard summary:', err);
       setError(err.response?.data?.message || 'Failed to load progress stats. Please try again.');

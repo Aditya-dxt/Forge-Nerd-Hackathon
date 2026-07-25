@@ -26,9 +26,12 @@ export default function ReflectionModal({ item, onClose }) {
     setError(null);
 
     try {
-      const contentId = item.id || item._id;
+      // Fetch active goal to get goalId as required by API
+      const goalsRes = await api.get('/api/goals/active');
+      const goalId = goalsRes.data[goalsRes.data.length - 1]?.id;
+
       await api.post('/api/reflections', {
-        contentId,
+        goalId,
         understood,
         note: note.trim(),
       });
